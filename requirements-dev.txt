@@ -1,0 +1,8 @@
+-r requirements.txt
+# Entraînement / évaluation (sur Modal) et tests locaux
+modal
+scikit-learn==1.9.1
+matplotlib
+imagehash==4.3.2
+pytest
+httpx

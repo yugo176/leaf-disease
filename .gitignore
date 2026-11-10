@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.gradio/
+.pytest_cache/
+.env
+.claude/
+# Données téléchargées : jamais dans le dépôt (elles restent sur le Volume Modal)
+/data/
+/results_modal/
+*.zip
