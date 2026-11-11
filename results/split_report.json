@@ -1,0 +1,126 @@
+{
+  "images_lisibles": 25126,
+  "images_illisibles": 94,
+  "doublons_exacts": 831,
+  "paires_quasi_doublons": 1155,
+  "groupes": 24065,
+  "images_ecartees_etiquettes_contradictoires": 494,
+  "tailles": {
+    "test": 3519,
+    "train": 17594,
+    "val": 3519
+  },
+  "par_classe": {
+    "cashew/anthracnose": {
+      "test": 247,
+      "train": 1235,
+      "val": 247
+    },
+    "cashew/gumosis": {
+      "train": 280,
+      "test": 56,
+      "val": 56
+    },
+    "cashew/healthy": {
+      "train": 977,
+      "val": 196,
+      "test": 195
+    },
+    "cashew/leaf_miner": {
+      "train": 985,
+      "test": 196,
+      "val": 197
+    },
+    "cashew/red_rust": {
+      "train": 1201,
+      "test": 241,
+      "val": 240
+    },
+    "cassava/bacterial_blight": {
+      "train": 1866,
+      "test": 373,
+      "val": 373
+    },
+    "cassava/brown_spot": {
+      "train": 1056,
+      "val": 212,
+      "test": 211
+    },
+    "cassava/green_mite": {
+      "train": 723,
+      "test": 145,
+      "val": 145
+    },
+    "cassava/healthy": {
+      "train": 853,
+      "test": 170,
+      "val": 170
+    },
+    "cassava/mosaic": {
+      "train": 859,
+      "test": 172,
+      "val": 172
+    },
+    "maize/fall_armyworm": {
+      "train": 203,
+      "test": 41,
+      "val": 41
+    },
+    "maize/grasshopper": {
+      "train": 481,
+      "val": 96,
+      "test": 96
+    },
+    "maize/healthy": {
+      "val": 29,
+      "train": 145,
+      "test": 29
+    },
+    "maize/leaf_beetle": {
+      "train": 667,
+      "val": 133,
+      "test": 133
+    },
+    "maize/leaf_blight": {
+      "train": 561,
+      "test": 112,
+      "val": 112
+    },
+    "maize/leaf_spot": {
+      "train": 750,
+      "test": 150,
+      "val": 150
+    },
+    "maize/streak_virus": {
+      "train": 655,
+      "val": 131,
+      "test": 131
+    },
+    "tomato/healthy": {
+      "train": 333,
+      "test": 67,
+      "val": 66
+    },
+    "tomato/leaf_blight": {
+      "train": 912,
+      "test": 183,
+      "val": 182
+    },
+    "tomato/leaf_curl": {
+      "train": 360,
+      "test": 72,
+      "val": 72
+    },
+    "tomato/septoria_leaf_spot": {
+      "train": 1948,
+      "test": 390,
+      "val": 390
+    },
+    "tomato/verticillium_wilt": {
+      "train": 544,
+      "val": 109,
+      "test": 109
+    }
+  },
+  "seuil_phash": 2
+}

@@ -1,15 +1,18 @@
-"""Pipeline complet sur Modal : données → découpage → entraînement GPU → évaluation.
+"""Pipeline complet sur Modal : données → découpage → entraînement → évaluation.
 
-Étapes (à lancer depuis la racine du projet, dans l'ordre) :
+Méthode robuste (le travail continue même si le PC perd sa connexion) :
 
-    modal run modal_pipeline.py::fetch      # télécharge CCMT, PlantDoc, iCassava dans un Volume Modal
-    modal run modal_pipeline.py::split      # doublons + découpage entraînement / validation / test
-    modal run modal_pipeline.py::train      # fine-tuning des deux modèles sur GPU (en parallèle)
-    modal run modal_pipeline.py::evaluate   # métriques, matrices de confusion, tests externes
+    set LEAF_GPU=none                 # PowerShell : $env:LEAF_GPU="none" ; ou L4 si le compte a une carte
+    modal deploy modal_pipeline.py
+    python scripts/spawn.py fetch     # télécharge CCMT, PlantDoc, iCassava ; une archive par jeu
+    python scripts/spawn.py split     # doublons + découpage entraînement / validation / test
+    python scripts/spawn.py train     # fine-tuning des deux modèles (en parallèle)
+    python scripts/spawn.py evaluate  # métriques, calibration, tests externes
 
-Puis, pour récupérer les résultats et le modèle :
+Puis, pour récupérer les résultats :
 
-    modal volume get leaf-disease-data results ./results_modal
+    modal volume get leaf-disease-data runs results_modal/
+    modal volume get leaf-disease-data results results_modal/
 """
 
 from __future__ import annotations
@@ -24,7 +27,8 @@ VOL_PATH = "/vol"
 _gpu_env = os.environ.get("LEAF_GPU", "L4")
 GPU = None if _gpu_env.lower() in ("none", "cpu", "") else _gpu_env
 # Sans GPU, on prend beaucoup de cœurs CPU : 8 pour lire les images, le reste pour le calcul.
-TRAIN_CPU = 8 if GPU else 32
+CPU_ONLY_CORES = 32
+TRAIN_CPU = 8 if GPU else CPU_ONLY_CORES
 LOADER_WORKERS = 8
 
 app = modal.App(APP_NAME)
@@ -44,6 +48,8 @@ image = (
         "requests",
         "matplotlib",
     )
+    # Même réglage GPU/CPU à l'intérieur du conteneur qu'au moment du déploiement
+    .env({"LEAF_GPU": os.environ.get("LEAF_GPU", "L4")})
     .add_local_python_source("leaf_core")
 )
 
@@ -144,74 +150,90 @@ def _read_csv(path: str) -> list[dict]:
 # ----------------------------------------------------------------------------- 1. données
 
 
+def _sel_ccmt(parts):
+    from leaf_core.labels import BY_FOLDER, CROP_FOLDERS
+
+    crop_by_folder = {v: k for k, v in CROP_FOLDERS.items()}
+    if "Raw Data" not in parts or len(parts) < 4:  # on ignore la version « augmentée »
+        return None
+    crop, folder = parts[-3], parts[-2]
+    if crop not in crop_by_folder:
+        return None
+    c = BY_FOLDER.get((crop_by_folder[crop], folder))
+    if c is None:
+        print("dossier inconnu :", parts)
+        return None
+    return c.id, {"crop": c.crop}
+
+
+def _sel_plantdoc(parts):
+    from leaf_core.external import PLANTDOC
+
+    if len(parts) < 3 or parts[-3] not in ("train", "test") or parts[-2] not in PLANTDOC:
+        return None
+    label, match = PLANTDOC[parts[-2]]
+    return label, {"src_class": parts[-2], "match": match, "src_split": parts[-3]}
+
+
+def _sel_icassava(parts):
+    from leaf_core.external import ICASSAVA
+
+    if len(parts) < 2 or parts[-2] not in ICASSAVA:
+        return None
+    label, match = ICASSAVA[parts[-2]]
+    return label, {"src_class": parts[-2], "match": match, "src_split": parts[-3] if len(parts) >= 3 else ""}
+
+
+DATASETS = {
+    "ccmt": (CCMT_ZIP, _sel_ccmt),
+    "plantdoc": (PLANTDOC_ZIP, _sel_plantdoc),
+    "icassava": (ICASSAVA_ZIP, _sel_icassava),
+}
+
+
 @app.function(image=image, volumes={VOL_PATH: vol}, cpu=8, memory=16384, timeout=3 * 3600)
 def fetch_all():
+    """Télécharge chaque jeu, réduit les images sur le disque LOCAL du conteneur,
+    puis écrit sur le Volume un manifeste CSV et UNE archive tar.
+
+    Pourquoi une archive : relire des milliers de petits fichiers sur un Volume Modal
+    s'est révélé très lent (~5 fichiers/s), alors qu'un seul gros fichier se lit vite.
+    """
     import collections
     import os
     import shutil
+    import tarfile
+    import time
 
-    from leaf_core.external import ICASSAVA, PLANTDOC
-    from leaf_core.labels import BY_FOLDER, CROP_FOLDERS
-
-    tmp = "/tmp/dl"
-    os.makedirs(tmp, exist_ok=True)
-    crop_by_folder = {v: k for k, v in CROP_FOLDERS.items()}
-
-    # --- CCMT (photos brutes seulement ; on ignore la version « augmentée »)
-    if not os.path.exists(f"{VOL_PATH}/ccmt/manifest.csv"):
-        _download(CCMT_ZIP, f"{tmp}/ccmt.zip")
-
-        def sel_ccmt(parts):
-            if "Raw Data" not in parts or len(parts) < 4:
-                return None
-            crop, folder = parts[-3], parts[-2]
-            if crop not in crop_by_folder:
-                return None
-            c = BY_FOLDER.get((crop_by_folder[crop], folder))
-            if c is None:
-                print("dossier inconnu :", parts)
-                return None
-            return c.id, {"crop": c.crop}
-
-        shutil.rmtree(f"{VOL_PATH}/ccmt", ignore_errors=True)
-        rows = _process_zip(f"{tmp}/ccmt.zip", sel_ccmt, f"{VOL_PATH}/ccmt/img")
-        os.remove(f"{tmp}/ccmt.zip")
-        _write_csv(rows, f"{VOL_PATH}/ccmt/manifest.csv")
-        print("CCMT :", collections.Counter(r["label"] for r in rows))
+    os.makedirs("/tmp/dl", exist_ok=True)
+    for name, (url, select) in DATASETS.items():
+        tar_path = f"{VOL_PATH}/{name}/img.tar"
+        if os.path.exists(tar_path):
+            continue
+        zip_path = f"/tmp/dl/{name}.zip"
+        _download(url, zip_path)
+        local = f"/tmp/{name}/img"
+        rows = _process_zip(zip_path, select, local)
+        os.remove(zip_path)
+        for r in rows:  # chemins « logiques » : _unpack les remplace par le disque local
+            r["out"] = r["out"].replace(local, f"{VOL_PATH}/{name}/img", 1)
+        man = f"{VOL_PATH}/{name}/manifest.csv"
+        if os.path.exists(man):  # manifeste déjà utilisé par le découpage : on vérifie qu'il est identique
+            old = {r["out"]: r["sha256"] for r in _read_csv(man)}
+            new = {r["out"]: r["sha256"] for r in rows}
+            assert old == new, f"{name} : les images reconstruites ne correspondent pas au manifeste"
+            print(f"{name} : {len(new)} images identiques au manifeste existant")
+        else:
+            os.makedirs(os.path.dirname(man), exist_ok=True)
+            _write_csv(rows, man)
+        print(name, ":", collections.Counter(r.get("src_class", r["label"]) for r in rows))
+        t = time.time()
+        with tarfile.open("/tmp/dl/img.tar", "w") as tar:
+            tar.add(local, arcname=".")
+        shutil.copyfile("/tmp/dl/img.tar", tar_path)
+        os.remove("/tmp/dl/img.tar")
         vol.commit()
-
-    # --- PlantDoc (test externe : maïs et tomate)
-    if not os.path.exists(f"{VOL_PATH}/plantdoc/manifest.csv"):
-        _download(PLANTDOC_ZIP, f"{tmp}/plantdoc.zip")
-
-        def sel_pd(parts):
-            if len(parts) < 3 or parts[-3] not in ("train", "test") or parts[-2] not in PLANTDOC:
-                return None
-            label, match = PLANTDOC[parts[-2]]
-            return label, {"src_class": parts[-2], "match": match, "src_split": parts[-3]}
-
-        rows = _process_zip(f"{tmp}/plantdoc.zip", sel_pd, f"{VOL_PATH}/plantdoc/img")
-        os.remove(f"{tmp}/plantdoc.zip")
-        _write_csv(rows, f"{VOL_PATH}/plantdoc/manifest.csv")
-        print("PlantDoc :", collections.Counter(r["src_class"] for r in rows))
-        vol.commit()
-
-    # --- iCassava 2019 (test externe : manioc)
-    if not os.path.exists(f"{VOL_PATH}/icassava/manifest.csv"):
-        _download(ICASSAVA_ZIP, f"{tmp}/icassava.zip")
-
-        def sel_ic(parts):
-            if len(parts) < 2 or parts[-2] not in ICASSAVA:
-                return None
-            label, match = ICASSAVA[parts[-2]]
-            split = parts[-3] if len(parts) >= 3 else ""
-            return label, {"src_class": parts[-2], "match": match, "src_split": split}
-
-        rows = _process_zip(f"{tmp}/icassava.zip", sel_ic, f"{VOL_PATH}/icassava/img")
-        os.remove(f"{tmp}/icassava.zip")
-        _write_csv(rows, f"{VOL_PATH}/icassava/manifest.csv")
-        print("iCassava :", collections.Counter(r["src_class"] for r in rows))
-        vol.commit()
+        print(f"{name} : archive écrite en {time.time() - t:.0f} s ({os.path.getsize(tar_path) / 1e6:.0f} Mo)")
 
 
 @app.local_entrypoint()
@@ -373,15 +395,21 @@ def _train_transform(size=224):
     ])
 
 
-def _copy_images_locally():
-    """Copie les images du Volume vers le disque du conteneur (lecture bien plus rapide)."""
-    import shutil
+def _unpack(name: str):
+    """Extrait l'archive d'un jeu sur le disque local du conteneur ; renvoie (ancien, nouveau) préfixe."""
+    import tarfile
     import time
 
     t = time.time()
-    shutil.copytree(f"{VOL_PATH}/ccmt/img", "/tmp/ccmt/img", dirs_exist_ok=True)
-    print(f"images copiées en {time.time() - t:.0f} s")
-    return f"{VOL_PATH}/ccmt/img", "/tmp/ccmt/img"
+    with open(f"{VOL_PATH}/{name}/img.tar", "rb") as fh:  # lecture séquentielle d'un seul gros fichier
+        with tarfile.open(fileobj=fh, mode="r|") as tar:
+            tar.extractall(f"/tmp/{name}/img", filter="data")
+    print(f"{name} : images extraites en {time.time() - t:.0f} s")
+    return f"{VOL_PATH}/{name}/img", f"/tmp/{name}/img"
+
+
+def _copy_images_locally():
+    return _unpack("ccmt")
 
 
 def _device():
@@ -389,7 +417,11 @@ def _device():
 
     if torch.cuda.is_available():
         return "cuda"
-    torch.set_num_threads(max(1, TRAIN_CPU - LOADER_WORKERS))
+    import os
+
+    cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else TRAIN_CPU
+    # sans GPU, on a réservé CPU_ONLY_CORES cœurs (ne pas se fier à TRAIN_CPU, calculé à l'import)
+    torch.set_num_threads(max(1, min(cores, CPU_ONLY_CORES) - LOADER_WORKERS))
     return "cpu"
 
 
@@ -551,8 +583,9 @@ def evaluate_all():
     sets = {s: [r for r in rows if r["split"] == s] for s in ("train", "val", "test")}
     ext = {name: _read_csv(f"{VOL_PATH}/{name}/manifest.csv") for name in ("plantdoc", "icassava")}
     for name in ext:
-        ext[name] = [{"path": r["out"], "label": r["label"], "match": r["match"], "src_class": r["src_class"]}
-                     for r in ext[name] if not r.get("error")]
+        a, b = _unpack(name)
+        ext[name] = [{"path": r["out"].replace(a, b, 1), "label": r["label"], "match": r["match"],
+                      "src_class": r["src_class"]} for r in ext[name] if not r.get("error")]
 
     summary = {}
     for arch_dir in sorted(os.listdir(f"{VOL_PATH}/runs")):
@@ -633,7 +666,7 @@ SAMPLE_CLASSES = ["maize/streak_virus", "maize/fall_armyworm", "cassava/mosaic",
                   "tomato/septoria_leaf_spot", "tomato/leaf_curl", "cashew/anthracnose", "cashew/healthy"]
 
 
-@app.function(image=image, volumes={VOL_PATH: vol}, timeout=600)
+@app.function(image=image, volumes={VOL_PATH: vol}, cpu=2, timeout=900)
 def pick_samples(seed: int = 1) -> dict[str, bytes]:
     """Quelques photos du jeu de TEST CCMT (jamais vues à l'entraînement), réduites à 512 px."""
     import io
@@ -641,12 +674,13 @@ def pick_samples(seed: int = 1) -> dict[str, bytes]:
 
     from PIL import Image
 
+    src, dst = _unpack("ccmt")
     rows = [r for r in _read_csv(f"{VOL_PATH}/split.csv") if r["split"] == "test"]
     rnd = random.Random(seed)
     out = {}
     for cid in SAMPLE_CLASSES:
         r = rnd.choice([r for r in rows if r["label"] == cid])
-        img = Image.open(r["path"]).convert("RGB")
+        img = Image.open(r["path"].replace(src, dst, 1)).convert("RGB")
         img.thumbnail((512, 512))
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=88)

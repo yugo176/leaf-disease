@@ -6,3 +6,4 @@ matplotlib
 imagehash==4.3.2
 pytest
 httpx
+playwright          # scripts/captures.py seulement

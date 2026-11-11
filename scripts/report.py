@@ -59,6 +59,38 @@ def confusion_png(rep: dict, title: str, path: Path, rows_subset: list[int] | No
     plt.close(fig)
 
 
+def external_confusion_png(npz: Path, name: str, title: str, path: Path):
+    """Tests externes en mode « culture indiquée » : seules les classes de la culture sont en colonnes."""
+    from sklearn.metrics import confusion_matrix
+
+    from leaf_core.metrics import restrict_to_crop
+
+    z = np.load(npz)
+    logits, y = z[name], z[f"{name}_y"]
+    crops = [BY_ID[CLASS_IDS[i]].crop for i in y]
+    pred = restrict_to_crop(logits, crops).argmax(1)
+    m = confusion_matrix(y, pred, labels=range(len(CLASS_IDS))).astype(float)
+    rows = [i for i in range(len(CLASS_IDS)) if m[i].sum() > 0]
+    cols = [j for j in range(len(CLASS_IDS)) if BY_ID[CLASS_IDS[j]].crop in set(crops)]
+    sub = m[np.ix_(rows, cols)]
+    norm = sub / np.maximum(sub.sum(1, keepdims=True), 1)
+    fig, ax = plt.subplots(figsize=(2.6 + 0.62 * len(cols), 2.4 + 0.5 * len(rows)))
+    ax.imshow(norm, cmap="Greens", vmin=0, vmax=1)
+    ax.set_xticks(range(len(cols)), [short(CLASS_IDS[j]) for j in cols], rotation=45, ha="right", fontsize=8)
+    ax.set_yticks(range(len(rows)), [short(CLASS_IDS[i]) for i in rows], fontsize=8)
+    for i in range(len(rows)):
+        for j in range(len(cols)):
+            if sub[i, j]:
+                ax.text(j, i, int(sub[i, j]), ha="center", va="center", fontsize=7,
+                        color="white" if norm[i, j] > 0.6 else "black")
+    ax.set_xlabel("Prédiction du modèle")
+    ax.set_ylabel("Vraie classe (classe correspondante)")
+    ax.set_title(title, fontsize=9)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
 def main():
     OUT.mkdir(exist_ok=True)
     runs = sorted(p for p in (SRC / "runs").iterdir() if (p / "eval.json").exists())
@@ -82,16 +114,21 @@ def main():
                 vals.append("n/a")
         lines.append(f"| {label} | {measure} | " + " | ".join(vals) + " |")
 
-    row("CCMT test (Ghana, mêmes champs)", "Précision (22 classes)", lambda e: e["ccmt_test"]["accuracy"])
+    row("CCMT test (Ghana, même collecte)", "Exactitude (22 classes)", lambda e: e["ccmt_test"]["accuracy"])
     row("", "F1 macro", lambda e: e["ccmt_test"]["macro_f1"])
     row("", "Top 3", lambda e: e["ccmt_test"]["top3_accuracy"])
-    row("", "Précision si culture indiquée", lambda e: e["ccmt_test"]["culture_connue"]["accuracy"])
+    row("", "Exactitude si culture indiquée", lambda e: e["ccmt_test"]["culture_connue"]["accuracy"])
+    row("", "Erreur de calibration (ECE)", lambda e: e["ccmt_test"]["ece"])
+    row("", "Part du test ayant un quasi-jumeau en entraînement", lambda e: e["ccmt_test"]["fuite"]["part_tests_avec_voisin_tres_proche"])
+    row("", "Exactitude sur ces images", lambda e: e["ccmt_test"]["fuite"]["precision_sur_ces_images"])
+    row("", "Exactitude sur les autres images", lambda e: e["ccmt_test"]["fuite"]["precision_sur_les_autres"])
     for name, label in (("plantdoc", "PlantDoc (Internet, maïs + tomate)"), ("icassava", "iCassava (Ouganda, manioc)")):
-        row(label, "Précision (22 classes)", lambda e, n=name: e[n]["toutes_correspondances"]["accuracy"])
-        row("", "Précision si culture indiquée", lambda e, n=name: e[n]["toutes_correspondances"]["culture_connue"]["accuracy"])
+        row(label, "Exactitude (22 classes)", lambda e, n=name: e[n]["toutes_correspondances"]["accuracy"])
+        row("", "Exactitude si culture indiquée", lambda e, n=name: e[n]["toutes_correspondances"]["culture_connue"]["accuracy"])
         row("", "Top 3", lambda e, n=name: e[n]["toutes_correspondances"]["top3_accuracy"])
         row("", "Correspondances exactes seulement, culture indiquée",
             lambda e, n=name: e[n]["correspondances_exactes"]["culture_connue"]["accuracy"])
+        row("", "Erreur de calibration (ECE)", lambda e, n=name: e[n]["toutes_correspondances"]["ece"])
     (OUT / "comparaison.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
 
@@ -100,8 +137,10 @@ def main():
     print("\nModèle retenu (F1 macro de validation) :", best)
     ev = summary[best]["eval"]
     confusion_png(ev["ccmt_test"], f"{NICE.get(best, best)} : test CCMT (lignes normalisées)", OUT / "confusion_ccmt_test.png")
-    confusion_png(ev["plantdoc"]["toutes_correspondances"], "Test externe PlantDoc", OUT / "confusion_plantdoc.png")
-    confusion_png(ev["icassava"]["toutes_correspondances"], "Test externe iCassava", OUT / "confusion_icassava.png")
+    for name, title in (("plantdoc", "Test externe PlantDoc"), ("icassava", "Test externe iCassava")):
+        external_confusion_png(SRC / "runs" / best / "logits.npz", name,
+                               f"{title} : {NICE.get(best, best)}\nculture indiquée (lignes normalisées)",
+                               OUT / f"confusion_{name}.png")
 
     # courbes d'apprentissage
     fig, ax = plt.subplots(figsize=(6, 3.4))

@@ -55,7 +55,10 @@ with gr.Blocks(title="Maladies des feuilles") as demo:
         "# Maladies des feuilles : maïs, manioc, tomate, anacarde\n"
         "Envoie la photo d'une feuille : le modèle propose les **3 diagnostics les plus probables** "
         "parmi 22 maladies, ravageurs ou état sain, avec quelques conseils. "
-        "Les photos ne sont pas conservées."
+        "Les photos ne sont pas conservées.\n\n"
+        "> **Prototype de recherche.** Sur des photos du Ghana proches de l'entraînement, le modèle a raison "
+        "93 fois sur 100. Sur des photos d'autres pays et d'autres photographes, il a raison "
+        "seulement **une à deux fois sur trois** (35 à 62 %) : c'est une piste, pas un diagnostic."
     )
     with gr.Row():
         with gr.Column():
@@ -66,7 +69,8 @@ with gr.Blocks(title="Maladies des feuilles") as demo:
             top3 = gr.Label(label="Top 3", num_top_classes=3)
             advice = gr.Markdown()
     if EXAMPLES:
-        gr.Examples(EXAMPLES, inputs=image, label="Exemples (photos de test, jamais vues à l'entraînement)")
+        gr.Examples(EXAMPLES, inputs=image, outputs=[top3, advice], label="Exemples (photos de test, jamais vues à l'entraînement)",
+                    fn=lambda img: analyse(img, AUTO), run_on_click=True, cache_examples=False)
     gr.Markdown(
         "---\nProjet de **Haboudi BOUKARI**. Données d'entraînement : jeu **CCMT** (photos prises au champ "
         "au Ghana, Mensah et al., 2023, [CC BY 4.0](https://data.mendeley.com/datasets/bwh3zbpkpv/1)). "
