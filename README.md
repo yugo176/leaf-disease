@@ -103,11 +103,40 @@ la tomate.
 - **Conseils** : repères généraux tirés des pratiques courantes, à valider par un agronome. Aucun nom de
   produit ni dose n'est donné.
 
-### Pistes pour la suite
+## Perspectives : un modèle qui marche sur des photos du Bénin
 
-Collecter quelques centaines de photos au Bénin avec des conseillers (ATDA, INRAB) ; affiner le modèle
-dessus ; ajouter une classe « autre / pas une feuille » ; entraîner sur GPU avec des images plus grandes ;
-exporter le modèle pour un téléphone hors ligne (ONNX ou TFLite).
+L'objectif est que le modèle reconnaisse aussi des photos **prises ailleurs qu'au Ghana**, et surtout
+des photos prises **au Bénin, par des producteurs, avec leur téléphone**. Les tests externes montrent
+que c'est aujourd'hui le point faible. Le plan, par ordre :
+
+**1. Mesurer d'abord, sur de vraies photos béninoises.** On ne peut pas améliorer ce qu'on ne mesure pas.
+Il faut un petit jeu de test béninois, **jamais utilisé pour l'entraînement** : quelques centaines de
+photos par culture, dans plusieurs départements (Borgou, Zou, Atlantique…), à plusieurs saisons,
+avec des téléphones différents. Chaque étiquette doit être validée par un agronome (ATDA, INRAB, université).
+C'est ce chiffre qui dira si le modèle est utilisable au Bénin.
+
+**2. Rendre le modèle plus robuste, avant même d'avoir beaucoup de données béninoises.**
+- Entraîner sur **plusieurs pays à la fois** : CCMT (Ghana), plus la partie entraînement de PlantDoc,
+  plus d'autres jeux ouverts de photos prises au champ, si leur licence le permet. Puis évaluer en
+  **laissant de côté un pays entier** à chaque fois : c'est la vraie mesure de la généralisation.
+- Partir d'un modèle de base plus général (par exemple DINOv2 ou un modèle de type CLIP). Ces modèles,
+  pré-entraînés sur bien plus d'images, résistent mieux aux changements de photographe et de décor.
+- Ajouter des augmentations « téléphone » : compression JPEG forte, flou de bougé, contre-jour,
+  photo de la plante entière plutôt que de la feuille.
+- Ajouter une classe **« autre / pas une feuille / maladie inconnue »**, et une détection des photos
+  trop différentes de l'entraînement. Le modèle doit pouvoir dire « je ne sais pas ».
+
+**3. Collecter au Bénin, puis affiner le modèle.**
+- Une version de la démo où le producteur peut, **s'il est d'accord**, envoyer sa photo avec la culture
+  et le lieu (sans données personnelles). Un agronome valide ensuite l'étiquette.
+- Affiner le modèle sur ces photos validées, en donnant la priorité aux photos où il hésite le plus
+  (apprentissage actif) : c'est là qu'une photo apporte le plus.
+- Ajouter les maladies et ravageurs importants au Bénin qui manquent à CCMT (par exemple la rouille
+  du maïs), choisis avec les agronomes selon ce qu'on observe vraiment dans les champs.
+
+**4. Le rendre utilisable au champ.** Exporter le modèle pour un téléphone **hors ligne** (ONNX ou TFLite),
+donner les conseils en français et dans des langues locales (fon, bariba, dendi, yoruba…), et faire
+relire les conseils par des agronomes.
 
 ## Pourquoi ce projet
 
